@@ -33,4 +33,5 @@ cargo run --
 可选参数：
 
 - `--output-root <DIR>`: 报告根目录（默认 `reports`）
+- `--output-root <DIR>`: 报告根目录（默认 `/srv/reports`）
 - `--codex-exe <BIN>`: Codex 可执行名或路径（默认 `codex`）

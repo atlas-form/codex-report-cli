@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 #[command(name = "codex-report-cli")]
 #[command(about = "Call Codex to generate per-project analysis reports")]
 struct Cli {
-    #[arg(long, default_value = "reports")]
+    #[arg(long, default_value = "/srv/reports")]
     output_root: PathBuf,
     #[arg(long, default_value = "codex")]
     codex_exe: String,
