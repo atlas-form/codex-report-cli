@@ -11,18 +11,24 @@
 输出结构示例：
 
 ```text
-reports/
-  batch_20260304_091500/
-    project_a/
-      report_20260304_091500.json
-      report_20260304_091500.md
-      meta_20260304_091500.json
-    project_b/
-      report_20260304_091500.json
-      report_20260304_091500.md
-      meta_20260304_091500.json
-    summary.json
+/srv/reports/
+  index.json
+  project_a/
+    20260304_091500/
+      report.json
+      report.md
+      meta.json
+    20260304_102030/
+      report.json
+      report.md
+      meta.json
 ```
+
+说明：
+
+- `index.json` 在 reports 根目录，记录所有项目和各项目的运行历史。
+- 同一项目按时间戳子目录归档，不会把时间批次放在 reports 根目录。
+- 每次运行会增量更新 `index.json`，保留已有项目记录。
 
 ## 使用
 

@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Local;
 use clap::Parser;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 #[derive(Parser, Debug)]
@@ -22,8 +22,44 @@ struct Cli {
 
 #[derive(Debug, Serialize)]
 struct SummaryItem {
+    project_key: String,
     project_name: String,
     project_path: String,
+    run_timestamp: String,
+    status: String,
+    report_json: String,
+    report_md: String,
+    meta_json: String,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct ReportsIndex {
+    #[serde(default)]
+    updated_at: String,
+    #[serde(default)]
+    projects: Vec<ProjectIndexEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct ProjectIndexEntry {
+    project_key: String,
+    project_name: String,
+    project_path: String,
+    project_dir: String,
+    latest_run_timestamp: String,
+    latest_status: String,
+    latest_report_json: String,
+    latest_report_md: String,
+    latest_meta_json: String,
+    #[serde(default)]
+    runs: Vec<RunIndexEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct RunIndexEntry {
+    run_timestamp: String,
+    generated_at: String,
     status: String,
     report_json: String,
     report_md: String,
@@ -36,11 +72,14 @@ fn main() -> Result<()> {
     let project = std::env::current_dir().context("failed to detect current working directory")?;
     let now = Local::now();
     let timestamp = now.format("%Y%m%d_%H%M%S").to_string();
-    let run_dir = cli.output_root.join(format!("batch_{timestamp}"));
-    fs::create_dir_all(&run_dir)
-        .with_context(|| format!("failed to create output dir {}", run_dir.display()))?;
+    fs::create_dir_all(&cli.output_root).with_context(|| {
+        format!(
+            "failed to create report root directory {}",
+            cli.output_root.display()
+        )
+    })?;
 
-    let item = generate_project_report(&project, &run_dir, &timestamp, &cli.codex_exe);
+    let item = generate_project_report(&project, &cli.output_root, &timestamp, &cli.codex_exe);
     let summary_item = match item {
         Ok(ok) => {
             println!("OK   {}", ok.project_path);
@@ -48,12 +87,14 @@ fn main() -> Result<()> {
         }
         Err(err) => {
             let project_name = project_name(&project);
-            let project_dir = run_dir.join(sanitize_name(&project_name));
-            fs::create_dir_all(&project_dir).ok();
+            let project_key = sanitize_name(&project_name);
+            let project_dir = cli.output_root.join(&project_key);
+            let run_dir = project_dir.join(&timestamp);
+            fs::create_dir_all(&run_dir).ok();
 
-            let report_json = project_dir.join(format!("report_{timestamp}.json"));
-            let report_md = project_dir.join(format!("report_{timestamp}.md"));
-            let meta_json = project_dir.join(format!("meta_{timestamp}.json"));
+            let report_json = run_dir.join("report.json");
+            let report_md = run_dir.join("report.md");
+            let meta_json = run_dir.join("meta.json");
 
             let _ = write_pretty_json(
                 &report_json,
@@ -83,8 +124,10 @@ fn main() -> Result<()> {
             );
 
             SummaryItem {
+                project_key,
                 project_name,
                 project_path: project.to_string_lossy().to_string(),
+                run_timestamp: timestamp.clone(),
                 status: "failed".to_string(),
                 report_json: report_json.to_string_lossy().to_string(),
                 report_md: report_md.to_string_lossy().to_string(),
@@ -93,27 +136,14 @@ fn main() -> Result<()> {
             }
         }
     };
-    let summary = vec![summary_item];
-
-    let summary_path = run_dir.join("summary.json");
-    write_pretty_json(
-        &summary_path,
-        &json!({
-            "generated_at": now.to_rfc3339(),
-            "timestamp": timestamp,
-            "batch_dir": run_dir.to_string_lossy(),
-            "projects_count": summary.len(),
-            "items": summary
-        }),
-    )?;
-
-    println!("Done. Summary: {}", summary_path.display());
+    let index_path = update_root_index(&cli.output_root, &summary_item, &now.to_rfc3339())?;
+    println!("Done. Root index: {}", index_path.display());
     Ok(())
 }
 
 fn generate_project_report(
     project: &Path,
-    run_dir: &Path,
+    output_root: &Path,
     timestamp: &str,
     codex_exe: &str,
 ) -> Result<SummaryItem> {
@@ -122,13 +152,15 @@ fn generate_project_report(
     }
 
     let project_name = project_name(project);
-    let project_dir = run_dir.join(sanitize_name(&project_name));
-    fs::create_dir_all(&project_dir)
-        .with_context(|| format!("failed to create project dir {}", project_dir.display()))?;
+    let project_key = sanitize_name(&project_name);
+    let project_dir = output_root.join(&project_key);
+    let run_dir = project_dir.join(timestamp);
+    fs::create_dir_all(&run_dir)
+        .with_context(|| format!("failed to create run dir {}", run_dir.display()))?;
 
-    let report_json = project_dir.join(format!("report_{timestamp}.json"));
-    let report_md = project_dir.join(format!("report_{timestamp}.md"));
-    let meta_json = project_dir.join(format!("meta_{timestamp}.json"));
+    let report_json = run_dir.join("report.json");
+    let report_md = run_dir.join("report.md");
+    let meta_json = run_dir.join("meta.json");
     let prompt = build_prompt(project, &project_name);
 
     let output = run_codex(codex_exe, project, &report_json, &prompt)?;
@@ -165,14 +197,97 @@ fn generate_project_report(
     )?;
 
     Ok(SummaryItem {
+        project_key,
         project_name,
         project_path: project.to_string_lossy().to_string(),
+        run_timestamp: timestamp.to_string(),
         status: "ok".to_string(),
         report_json: report_json.to_string_lossy().to_string(),
         report_md: report_md.to_string_lossy().to_string(),
         meta_json: meta_json.to_string_lossy().to_string(),
         error: None,
     })
+}
+
+fn update_root_index(output_root: &Path, item: &SummaryItem, generated_at: &str) -> Result<PathBuf> {
+    let index_path = output_root.join("index.json");
+    let mut index: ReportsIndex = if index_path.exists() {
+        let raw = fs::read_to_string(&index_path)
+            .with_context(|| format!("failed to read {}", index_path.display()))?;
+        serde_json::from_str(&raw).with_context(|| {
+            format!(
+                "failed to parse existing {} (not overwriting it)",
+                index_path.display()
+            )
+        })?
+    } else {
+        ReportsIndex::default()
+    };
+
+    let run_entry = RunIndexEntry {
+        run_timestamp: item.run_timestamp.clone(),
+        generated_at: generated_at.to_string(),
+        status: item.status.clone(),
+        report_json: item.report_json.clone(),
+        report_md: item.report_md.clone(),
+        meta_json: item.meta_json.clone(),
+        error: item.error.clone(),
+    };
+
+    if let Some(existing) = index
+        .projects
+        .iter_mut()
+        .find(|x| x.project_key == item.project_key)
+    {
+        existing.project_name = item.project_name.clone();
+        existing.project_path = item.project_path.clone();
+        existing.project_dir = output_root
+            .join(&item.project_key)
+            .to_string_lossy()
+            .to_string();
+
+        if let Some(run) = existing
+            .runs
+            .iter_mut()
+            .find(|x| x.run_timestamp == item.run_timestamp)
+        {
+            *run = run_entry;
+        } else {
+            existing.runs.push(run_entry);
+        }
+
+        existing
+            .runs
+            .sort_by(|a, b| b.run_timestamp.cmp(&a.run_timestamp));
+        if let Some(latest) = existing.runs.first() {
+            existing.latest_run_timestamp = latest.run_timestamp.clone();
+            existing.latest_status = latest.status.clone();
+            existing.latest_report_json = latest.report_json.clone();
+            existing.latest_report_md = latest.report_md.clone();
+            existing.latest_meta_json = latest.meta_json.clone();
+        }
+    } else {
+        index.projects.push(ProjectIndexEntry {
+            project_key: item.project_key.clone(),
+            project_name: item.project_name.clone(),
+            project_path: item.project_path.clone(),
+            project_dir: output_root
+                .join(&item.project_key)
+                .to_string_lossy()
+                .to_string(),
+            latest_run_timestamp: item.run_timestamp.clone(),
+            latest_status: item.status.clone(),
+            latest_report_json: item.report_json.clone(),
+            latest_report_md: item.report_md.clone(),
+            latest_meta_json: item.meta_json.clone(),
+            runs: vec![run_entry],
+        });
+    }
+
+    index.projects.sort_by(|a, b| a.project_key.cmp(&b.project_key));
+    index.updated_at = generated_at.to_string();
+    write_pretty_json(&index_path, &serde_json::to_value(index).context("serialize index failed")?)?;
+    Ok(index_path)
 }
 
 fn run_codex(codex_exe: &str, project_path: &Path, output_json: &Path, prompt: &str) -> Result<std::process::Output> {
